@@ -7,3 +7,6 @@ An image processing project I made based on [a video](https://www.youtube.com/sh
 uv run main.py path/to/image.png
 
 This works with anything though really, just replace kirk.png with something else
+
+https://github.com/user-attachments/assets/8b2f88bb-f2d2-4ec2-8e6b-a2fbf3edc3c7
+
