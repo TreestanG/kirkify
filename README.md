@@ -8,5 +8,5 @@ uv run main.py path/to/image.png
 
 This works with anything though really, just replace kirk.png with something else
 
-https://github.com/user-attachments/assets/8b2f88bb-f2d2-4ec2-8e6b-a2fbf3edc3c7
 
+![kirkify](https://github.com/user-attachments/assets/cda5d801-0915-47bc-8431-b5b3bdb9243f)
