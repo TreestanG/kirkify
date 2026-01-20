@@ -2,6 +2,75 @@ import os
 from PIL import Image
 import numpy as np
 import cv2
+from scipy import ndimage
+
+class FluidSimulator:
+    """
+    Particle-based physics engine for fluid-like pixel migration.
+    Ported from the Rust morph_sim.rs logic.
+    """
+    def __init__(self, start_pos, target_pos, shape):
+        self.pos = start_pos.astype(np.float32)
+        self.target = target_pos.astype(np.float32)
+        self.vel = np.zeros_like(self.pos)
+        self.h, self.w, _ = shape
+        
+        # Physics constants
+        self.friction = 0.97
+        self.max_velocity = 6.0
+        self.alignment_factor = 0.8
+        self.personal_space = 0.95
+        
+    def step(self, t):
+        """
+        Updates the simulation by one frame.
+        t: Progress from 0 to 1.
+        """
+        acc = np.zeros_like(self.pos)
+        
+        factor_curve = t * t * (3 - 2 * t) # Smoothstep-like easing
+        morph_strength = factor_curve * 0.5
+        acc += (self.target - self.pos) * morph_strength
+        
+        grid_scale = 4
+        gh, gw = max(1, self.h // grid_scale), max(1, self.w // grid_scale)
+        
+        y_idx = (self.pos[:, 0] * (gh - 1) / (self.h - 1)).astype(np.int32)
+        x_idx = (self.pos[:, 1] * (gw - 1) / (self.w - 1)).astype(np.int32)
+        np.clip(y_idx, 0, gh - 1, out=y_idx)
+        np.clip(x_idx, 0, gw - 1, out=x_idx)
+        
+        grid_vel = np.zeros((gh, gw, 2), dtype=np.float32)
+        grid_count = np.zeros((gh, gw), dtype=np.float32)
+        np.add.at(grid_vel, (y_idx, x_idx), self.vel)
+        np.add.at(grid_count, (y_idx, x_idx), 1.0)
+        
+        mask = grid_count > 0
+        grid_vel[mask] /= grid_count[mask][:, np.newaxis]
+        grid_vel[:, :, 0] = ndimage.gaussian_filter(grid_vel[:, :, 0], sigma=1.0)
+        grid_vel[:, :, 1] = ndimage.gaussian_filter(grid_vel[:, :, 1], sigma=1.0)
+        
+        avg_vel = grid_vel[y_idx, x_idx]
+        acc += (avg_vel - self.vel) * self.alignment_factor
+        
+        density = ndimage.gaussian_filter(grid_count, sigma=1.0)
+        dy, dx = np.gradient(density)
+        repulsion = np.stack([dy[y_idx, x_idx], dx[y_idx, x_idx]], axis=1)
+        acc -= repulsion * 0.5 # Push away from high density
+        
+        self.vel += acc
+        self.vel *= self.friction
+        
+        speed = np.linalg.norm(self.vel, axis=1, keepdims=True)
+        speed_mask = speed > self.max_velocity
+        self.vel[speed_mask.flatten()] *= (self.max_velocity / speed[speed_mask.flatten()])
+        
+        self.pos += self.vel
+        
+        np.clip(self.pos[:, 0], 0, self.h - 1, out=self.pos[:, 0])
+        np.clip(self.pos[:, 1], 0, self.w - 1, out=self.pos[:, 1])
+        
+        return self.pos
 
 def same_res(path1: str, path2: str):
     """Loads two images and resizes the second to match the first."""
@@ -68,8 +137,12 @@ def match_by_bins(
     y_flat = y.ravel()
     x_flat = x.ravel()
 
-    src_order = np.lexsort((x_flat, y_flat, src_b, src_a, src_l))
-    tgt_order = np.lexsort((x_flat, y_flat, tgt_b, tgt_a, tgt_l))
+    spatial_bin = 10
+    y_binned = y_flat // spatial_bin
+    x_binned = x_flat // spatial_bin
+
+    src_order = np.lexsort((x_binned, y_binned, src_b, src_a, src_l))
+    tgt_order = np.lexsort((x_binned, y_binned, tgt_b, tgt_a, tgt_l))
 
     matched = np.empty_like(target_pixels)
     matched[tgt_order] = source_pixels[src_order]
@@ -101,8 +174,8 @@ def create_frame(source_pixels, src_order, tgt_order, shape, t):
     
     return frame_arr
 
-def save_animation_video(source_pixels, src_order, tgt_order, shape, filename="kirkify.mp4", fps=30, duration=5, start_pause=1.0, end_pause=1.5):
-    """Direct linear interpolation of pixels from source to target."""
+def save_animation_video(source_pixels, src_order, tgt_order, shape, filename="kirkify.mp4", fps=30, duration=5, start_pause=1.0, end_pause=1.5, method="linear"):
+    """Saves the animation as a video file using either linear or fluid simulation."""
     h, w, _ = shape
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(filename, fourcc, fps, (w, h))
@@ -122,15 +195,22 @@ def save_animation_video(source_pixels, src_order, tgt_order, shape, filename="k
         cv2.COLOR_Lab2BGR
     ).reshape(-1, 3)
     
-    print(f"Generating direct interpolation animation...")
+    print(f"Generating {method} animation...")
+    
+    sim = None
+    if method == "fluid":
+        sim = FluidSimulator(start_pos, target_pos, shape)
     
     for i in range(start_frames + moving_frames + end_frames):
         if i < start_frames:
             frame_pos = start_pos
         elif i < start_frames + moving_frames:
             t = (i - start_frames) / (moving_frames - 1)
-            t_eased = t * t * (3 - 2 * t)
-            frame_pos = (1 - t_eased) * start_pos + t_eased * target_pos
+            if method == "fluid":
+                frame_pos = sim.step(t)
+            else:
+                t_eased = t * t * (3 - 2 * t)
+                frame_pos = (1 - t_eased) * start_pos + t_eased * target_pos
         else:
             frame_pos = target_pos
 
